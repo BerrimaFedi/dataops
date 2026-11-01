@@ -130,3 +130,82 @@ Sans `dvc push`, le remote `dvc-storage` ne contiendrait pas la version `data-v2
 * 4cd79aa Add pipeline, data checks and unit tests
 * 3c8775a Empty project with requirements
 ```
+
+## TP3 — Du pipeline Python à l’ELT moderne avec DuckDB et dbt
+
+### Réponses aux questions
+
+#### Q1. Pourquoi charger toutes les colonnes en texte, au lieu de laisser DuckDB deviner les types ? Pensez à ce qui arriverait le jour où une quantité vaut deux.
+Charger toutes les colonnes en `VARCHAR` (`all_varchar = true`) découple strictement l'ingestion (Load) de la validation/transformation (Transform). Si une colonne de quantité contenait par exemple la valeur textuelle `"deux"`, ou si une date était mal formatée (`2026-13-45`), DuckDB planterait brutalement lors de la détection automatique de type à l'ingestion. En chargeant tout en texte brut, le fichier est toujours ingéré avec succès, préservant ainsi l'intégralité des données brutes pour audit et permettant d'appliquer des conversions contrôlées (`try_cast`, `try_strptime`) en SQL.
+
+#### Q2. Le total naïf en SQL est aussi faux que celui de l’ancien script Python. Qu’est-ce que cela vous apprend sur le langage, et sur ce qui rend un pipeline fiable ?
+La fiabilité d'un pipeline de données ne dépend pas du langage de programmation (Python, SQL ou autre). Une même logique dépourvue de contrôles de qualité produira rigoureusement les mêmes erreurs quel que soit le moteur d'exécution. Ce qui rend un pipeline fiable, c'est l'architecture de contrôle : validation de schéma, règles d'intégrité explicites, détection des anomalies, tables de quarantaine et arrêt automatique de la chaîne de publication en cas d'erreur.
+
+#### Q3. Si demain une règle de nettoyage est fausse, quel avantage y a-t-il à avoir gardé le brut dans l’entrepôt ?
+En conservant les données brutes immutables dans l'entrepôt (`raw.orders`), il suffit de corriger le modèle SQL et de relancer `dbt run` pour recalculer immédiatement et rétroactivement tous les modèles et rapports en aval. Il n'est pas nécessaire de solliciter à nouveau les systèmes sources ou de re-extraire les fichiers.
+
+#### Q4. En entreprise, profiles.yml contiendrait l’adresse et le mot de passe de Snowflake ou de BigQuery. Que faudrait-il changer dans ce fichier, et où mettre le mot de passe ?
+Il ne faut jamais inscrire de secrets en clair dans `profiles.yml` car ce fichier est versionné dans Git. On utilise des variables d'environnement Jinja :
+```yaml
+password: "{{ env_var('DBT_PASSWORD') }}"
+```
+Le mot de passe réel est stocké dans les variables d'environnement de la machine ou injecté via les secrets de la plateforme de CI/CD (ex. GitHub Secrets, AWS Secrets Manager, HashiCorp Vault).
+
+#### Q5. La commande 1013 a toujours sa ligne dans stg_orders, avec une date vide. Pourquoi ne pas la supprimer dès le staging ?
+Le modèle de staging a pour unique rôle de normaliser la forme (types, casse, trim), sans altérer le fond ni prendre de décisions métier sur le filtrage des lignes. Supprimer des lignes dès le staging masquerait des données et rendrait impossible la construction d'une table de quarantaine ou l'analyse des rejets en aval.
+
+#### Q6. stg_orders est une vue, pas une table. Que se passe-t-il quand vous la lisez, et pourquoi est-ce acceptable pour une couche de staging ?
+Lorsqu'on interroge une vue, DuckDB exécute la requête sous-jacente à la volée. C'est parfaitement acceptable (et recommandé) pour une couche de staging car la transformation est légère (simples casts et renommages), évitant ainsi d'occuper de l'espace disque inutilement tout en garantissant des données toujours à jour par rapport à la source brute.
+
+#### Q7. Ouvrez target/compiled/shop/models/intermediate/int_orders_checked.sql. Par quoi dbt a-t-il remplacé `{{ ref('stg_orders') }}` ?
+dbt a remplacé le Jinja `{{ ref('stg_orders') }}` par le nom complet et qualifié de la relation dans DuckDB : `"warehouse"."main"."stg_orders"` (ou `stg_orders`).
+
+#### Q8. Dans le TP1, la règle 5 utilisait `df.duplicated("order_id", keep="first")`. Expliquez ce que fait `row_number() over (partition by order_id order by _row_number)`, et pourquoi on a eu besoin de `_row_number`.
+- `row_number() over (partition by order_id order by _row_number)` partitionne les données par `order_id` et attribue un numéro séquentiel (1, 2, 3...) trié selon `_row_number`. Les lignes ayant un numéro > 1 sont les doublons ultérieurs.
+- En SQL relationnel, les tables représentent des ensembles mathématiques non ordonnés. La colonne technique `_row_number` générée dès l'ingestion est indispensable pour mémoriser l'ordre physique initial des lignes du fichier CSV et déterminer sans ambiguïté quelle commande est arrivée en premier.
+
+#### Q9. Un analyste veut ajouter le chiffre d’affaires par produit. Quel fichier crée-t-il, dans quel dossier, et doit-il toucher à du Python ?
+L'analyste crée simplement le fichier [`models/marts/revenue_by_product.sql`](file:///c:/Users/berri/Desktop/dataops/dataops-lab1/models/marts/revenue_by_product.sql) en effectuant une requête SQL agrégeant les ventes depuis `orders_clean`. Il n'a besoin de toucher à **aucune ligne de Python**.
+
+#### Q10. Quand vous avez cassé la règle 5, quel test a échoué ? Quels modèles et quels tests ont été SKIP, et pourquoi est-ce exactement ce que l’on veut pour le rapport du directeur ?
+- Le test de données `unique_orders_clean_order_id` a échoué.
+- Tous les modèles et tests dépendants en aval (`revenue_by_country`, `unique_revenue_by_country_country`) ont été automatiquement passés en **SKIP**.
+- C'est le principe du « cordon Andon » (arrêt de chaîne) : cela empêche formellement de publier un rapport de chiffre d'affaires corrompu au directeur général lorsqu'une anomalie de données est détectée.
+
+#### Q11. Tableau de correspondance Python vs dbt
+| Contrôle du TP1 (Python) | Son équivalent dbt |
+| :--- | :--- |
+| `check_schema` | Schéma déclaré dans `sources.yml`, types stricts dans `stg_orders.sql`, et tests `not_null` |
+| Règles 1 à 6 dans `clean_orders` | Expression `CASE WHEN ... END AS reject_reason` dans `int_orders_checked.sql` |
+| `check_reject_rate` | Test singulier `data_tests/assert_reject_rate_below_20_percent.sql` |
+| `rejected_orders.csv` | Table de quarantaine matérialisée `models/marts/orders_rejected.sql` |
+| `PIPELINE STOPPED, rien n’est publié` | Échec de test dans `dbt build`, bloquant l'exécution et mettant les marts en `SKIP` |
+
+#### Q12. Le test unitaire n’a pas eu besoin de load_raw.py ni d’aucun fichier CSV. D’où venaient ses données ? Pourquoi est-ce important pour un test qui tournera dans la CI à la séance 4 ?
+Les données de test proviennent directement des lignes déclarées en YAML sous `given.rows` dans [`int_orders_checked.yml`](file:///c:/Users/berri/Desktop/dataops/dataops-lab1/models/intermediate/int_orders_checked.yml). C'est essentiel pour la CI car les tests unitaires doivent s'exécuter de façon instantanée, déterministe et autonome, sans dépendre de fichiers CSV externes ni d'accès à des bases distantes.
+
+#### Q13. Demain, la colonne country arrive vide dans la source. Avec le graphe, citez tous les modèles touchés. Combien de temps vous aurait pris la même réponse sans le graphe, dans un dossier de 200 scripts SQL ?
+- Modèles impactés : `raw.orders` → `stg_orders` → `int_orders_checked` → `orders_clean` et `orders_rejected` → `revenue_by_country` et `revenue_by_product`.
+- Sans graphe de lignage automatique, il aurait fallu faire des recherches textuelles manuelles (`grep`, parcours des tables) dans les 200 scripts, une opération fastidieuse pouvant prendre plusieurs heures avec un risque élevé d'erreur ou d'omission.
+
+#### Q14. Tableau comparatif Jour 2 et Jour 3
+| Cas de figure | Pipeline Python (TP1) | Pipeline dbt (TP3) |
+| :--- | :--- | :--- |
+| **Jour 2 : quel contrôle arrête la chaîne ?** | `check_reject_rate` (taux de rejet 100% > 20%) | Test singulier `assert_reject_rate_below_20_percent` en FAIL, marts en SKIP |
+| **Jour 3 : quel message d’erreur ?** | `DataQualityError: Missing columns: ['unit_price']` | `Binder Error: Table "src" does not have a column named "unit_price"` dans `stg_orders` |
+| **Le rapport de la veille est-il conservé ?** | Oui, le fichier `revenue_by_country.csv` est intact | Oui, la table `revenue_by_country` n'est pas modifiée (total préservé à 8 835,40 €) |
+| **Code de sortie** | `1` | `1` |
+
+#### Q15. Au jour 2, orders_rejected a aussi été SKIP. Le fichier de quarantaine contient donc encore les rejets du jour 1. Est-ce un problème ? Proposez une façon de garder la quarantaine du jour 2 tout en bloquant le rapport.
+Oui, c'est une limite pour l'investigation car les équipes support ne peuvent pas inspecter directement dans la table de quarantaine les motifs précis des rejets du jour 2.
+Pour y remédier, on peut :
+1. Positionner le test du taux de rejet uniquement en amont de `revenue_by_country` et `orders_clean`, tout en laissant `orders_rejected` se matérialiser.
+2. Ou scinder l'exécution : construire systématiquement la table de quarantaine (`dbt run --select orders_rejected`), puis exécuter les tests d'arrêt de chaîne avant la publication du rapport final.
+
+---
+
+### Dernière ligne d'exécution de `dbt build` sur le Jour 1 :
+```
+Done. PASS=14 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=14
+```
+*(Et PASS=16 avec le modèle bonus `revenue_by_product`)*
