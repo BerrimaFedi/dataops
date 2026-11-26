@@ -1,12 +1,19 @@
-import os
 import sys
-from reportlab.lib.pagesizes import A4
+
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, HRFlowable
-)
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    HRFlowable,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
 
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -62,8 +69,6 @@ def build_pdf(filename="Rapport_DataOps_TP1_TP2_TP3.pdf"):
     c_primary = colors.HexColor("#0F172A")    # Slate 900
     c_accent = colors.HexColor("#2563EB")     # Blue 600
     c_accent_dark = colors.HexColor("#1D4ED8")# Blue 700
-    c_success = colors.HexColor("#059669")    # Emerald 600
-    c_warning = colors.HexColor("#D97706")    # Amber 600
     c_border = colors.HexColor("#E2E8F0")     # Slate 200
     c_bg_light = colors.HexColor("#F8FAFC")   # Slate 50
     c_code_bg = colors.HexColor("#1E293B")    # Slate 800
@@ -123,24 +128,6 @@ def build_pdf(filename="Rapport_DataOps_TP1_TP2_TP3.pdf"):
         spaceAfter=6
     )
 
-    body_bold = ParagraphStyle(
-        'Body_Bold',
-        parent=body_style,
-        fontName='Helvetica-Bold'
-    )
-
-    question_style = ParagraphStyle(
-        'Question_Custom',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        leading=14,
-        textColor=colors.HexColor("#0F172A"),
-        spaceBefore=8,
-        spaceAfter=4,
-        keepWithNext=True
-    )
-
     code_style = ParagraphStyle(
         'Code_Custom',
         parent=styles['Normal'],
@@ -150,16 +137,6 @@ def build_pdf(filename="Rapport_DataOps_TP1_TP2_TP3.pdf"):
         textColor=colors.HexColor("#F1F5F9"),
         spaceBefore=3,
         spaceAfter=5
-    )
-
-    badge_style = ParagraphStyle(
-        'Badge',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8.5,
-        leading=11,
-        textColor=colors.white,
-        alignment=1
     )
 
     table_cell = ParagraphStyle(

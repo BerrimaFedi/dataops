@@ -1,4 +1,5 @@
 import sys
+
 import duckdb
 
 if hasattr(sys.stdout, "reconfigure"):
